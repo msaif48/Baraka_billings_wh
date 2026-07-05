@@ -15,7 +15,7 @@
     "express-rate-limit": "*",
     "javascript-obfuscator": "^5.4.3",
     "jsonwebtoken": "*",
-    "nedb-promises": "^6.2.3",
+    "mongodb": "^6.8.0",
     "node-cron": "*",
     "open": "7.4.2",
     "qrcode-terminal": "*",
