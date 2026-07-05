@@ -8,7 +8,6 @@ const fs = require('fs');
 const cron = require('node-cron');
 const open = require('open');
 const rateLimit = require('express-rate-limit');
-const Datastore = require('nedb-promises');
 const AWS = require('aws-sdk'); 
 require('aws-sdk/lib/maintenance_mode_message').suppress = true; 
 
@@ -32,35 +31,99 @@ const loginLimiter = rateLimit({
 });
 
 // ==========================================
-// NEDB DATABASE INITIALIZATION & SECURITY
+// ☁️ MONGODB ATLAS CLOUD INITIALIZATION
 // ==========================================
+const { MongoClient } = require('mongodb');
+
+// Grab the cloud URL from Render environment variables
+const mongoClient = new MongoClient(process.env.MONGODB_URI || 'mongodb://localhost:27017/baraka');
+let mongoDbInstance = null;
+
+// Connect to Cloud Atlas asynchronously
+mongoClient.connect().then(() => {
+    mongoDbInstance = mongoClient.db();
+    console.log("🔌 Connected successfully to MongoDB Cloud Atlas!");
+    initializeIndices();
+    initializeAdmin(); 
+}).catch(err => console.error("❌ MongoDB Connection Error:", err));
+
+class MongoCursorWrapper {
+    constructor(cursor) { this.cursor = cursor; }
+    sort(obj) { this.cursor = this.cursor.sort(obj); return this; }
+    skip(n) { this.cursor = this.cursor.skip(n); return this; }
+    limit(n) { this.cursor = this.cursor.limit(n); return this; }
+    then(onFulfilled, onRejected) {
+        return this.cursor.toArray().then(onFulfilled, onRejected);
+    }
+}
+
+class MongoCollectionWrapper {
+    constructor(collectionName) { this.name = collectionName; }
+    get col() {
+        if (!mongoDbInstance) throw new Error("Database connection is initializing...");
+        return mongoDbInstance.collection(this.name);
+    }
+    async findOne(...args) { return await this.col.findOne(...args); }
+    find(...args) { return new MongoCursorWrapper(this.col.find(...args)); }
+    async insert(doc) {
+        if (Array.isArray(doc)) { await this.col.insertMany(doc); return doc; } 
+        else { await this.col.insertOne(doc); return doc; }
+    }
+    async update(query, update, options = {}) {
+        const mongoOptions = { upsert: options.upsert || false };
+        if (options.multi) {
+            const res = await this.col.updateMany(query, update, mongoOptions);
+            return res.modifiedCount;
+        } else {
+            const res = await this.col.updateOne(query, update, mongoOptions);
+            return res.modifiedCount;
+        }
+    }
+    async remove(query, options = {}) {
+        if (options.multi) {
+            const res = await this.col.deleteMany(query);
+            return res.deletedCount;
+        } else {
+            const res = await this.col.deleteOne(query);
+            return res.deletedCount;
+        }
+    }
+    async count(query) { return await this.col.countDocuments(query); }
+    async ensureIndex(options) {
+        const spec = {};
+        spec[options.fieldName] = 1;
+        return await this.col.createIndex(spec, { unique: options.unique || false });
+    }
+}
+
 const db = {
-    users: Datastore.create({ filename: path.join(process.cwd(), 'users.db'), autoload: true }),
-    inventory: Datastore.create({ filename: path.join(process.cwd(), 'inventory.db'), autoload: true }),
-    invoices: Datastore.create({ filename: path.join(process.cwd(), 'invoices.db'), autoload: true }),
-    customers: Datastore.create({ filename: path.join(process.cwd(), 'customers.db'), autoload: true }),
-    expenses: Datastore.create({ filename: path.join(process.cwd(), 'expenses.db'), autoload: true }),
-    settings: Datastore.create({ filename: path.join(process.cwd(), 'settings.db'), autoload: true }),
-    audit_logs: Datastore.create({ filename: path.join(process.cwd(), 'audit_logs.db'), autoload: true }),   // ✅ SEC: Audit Logs
-    login_history: Datastore.create({ filename: path.join(process.cwd(), 'login_history.db'), autoload: true }) // ✅ SEC: Login History
+    users: new MongoCollectionWrapper('users'),
+    inventory: new MongoCollectionWrapper('inventory'),
+    invoices: new MongoCollectionWrapper('invoices'),
+    customers: new MongoCollectionWrapper('customers'),
+    expenses: new MongoCollectionWrapper('expenses'),
+    settings: new MongoCollectionWrapper('settings'),
+    audit_logs: new MongoCollectionWrapper('audit_logs'),
+    login_history: new MongoCollectionWrapper('login_history')
 };
 
-// 🚀 PERFORMANCE OPTIMIZATION (INDEXING)
-db.invoices.ensureIndex({ fieldName: 'id', unique: true });
-db.invoices.ensureIndex({ fieldName: 'date' });
-db.invoices.ensureIndex({ fieldName: 'isSynced' }); 
-db.inventory.ensureIndex({ fieldName: 'id', unique: true });
-db.inventory.ensureIndex({ fieldName: 'sku' });
-db.customers.ensureIndex({ fieldName: 'phone', unique: true });
+function initializeIndices() {
+    db.invoices.ensureIndex({ fieldName: 'id', unique: true });
+    db.invoices.ensureIndex({ fieldName: 'date' });
+    db.invoices.ensureIndex({ fieldName: 'isSynced' }); 
+    db.inventory.ensureIndex({ fieldName: 'id', unique: true });
+    db.inventory.ensureIndex({ fieldName: 'sku' });
+    db.customers.ensureIndex({ fieldName: 'phone', unique: true });
+}
 
-// ✅ NEW: CENTRALIZED AUDIT LOGGING ENGINE
+// ✅ CENTRALIZED AUDIT LOGGING ENGINE
 async function logAudit(username, action, entity, details) {
     try {
         await db.audit_logs.insert({
             timestamp: new Date().toISOString(),
             username: username || 'SYSTEM',
-            action: action,      // e.g., 'CREATE', 'UPDATE', 'DELETE_SOFT'
-            entity: entity,      // e.g., 'INVOICE', 'INVENTORY'
+            action: action,
+            entity: entity,
             details: details     
         });
     } catch(e) { console.error("Audit Log Failure:", e); }
@@ -110,13 +173,11 @@ async function initializeAdmin() {
         console.log("🛠️ Default admin user created.");
     }
 }
-initializeAdmin();
 
 // ==========================================
 // SECURE CLOUD LICENSE CHECK 
 // ==========================================
 const { enforceLicense, licenseRoutes, getValidLicenseKey, getLicenseStatus } = require('./license.js');
-
 app.use('/api', enforceLicense); 
 app.use('/api', licenseRoutes);  
 
@@ -200,7 +261,6 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
     let grossProfit = 0; 
     let totalTaxCollected = 0;
     
-    // Analytics Aggregators
     let cashierStats = {}; 
     let productStats = {};
 
@@ -209,12 +269,10 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
         grossProfit += (inv.totalProfit || 0);
         totalTaxCollected += (inv.taxAmount || 0);
 
-        // 1. Cashier Performance Tracking
         const cashier = inv.cashier || 'System';
         if (!cashierStats[cashier]) cashierStats[cashier] = 0;
         if (!inv.isSettlement) cashierStats[cashier] += (inv.grandTotal || 0);
 
-        // 2. Top Products Tracking
         if (inv.items && !inv.isSettlement) {
             inv.items.forEach(item => {
                 if (item.id === 'settlement' || item.name.includes('Refund')) return;
@@ -347,7 +405,6 @@ app.post('/api/inventory', authenticateToken, requireAdmin, async (req, res) => 
     const insertedProduct = await db.inventory.insert(newProduct);
     await logAudit(req.user.username, 'CREATE', 'INVENTORY', `Added product: ${name}`);
     
-    // 🚀 FIRE WEBHOOK TO E-COMMERCE
     dispatchWebhook('inventory.created', insertedProduct);
     
     res.json({ message: "Product added!", product: insertedProduct });
@@ -409,7 +466,6 @@ app.post('/api/inventory/bulk', authenticateToken, requireAdmin, async (req, res
     res.json({ message: `Successfully imported ${addedCount} items!` });
 });
 
-// Webhook Management API Routes (Admin Only)
 app.get('/api/webhooks', authenticateToken, requireAdmin, async (req, res) => {
     const settings = await db.settings.findOne({ _id: 'global' });
     res.json(settings.webhooks || []);
@@ -457,7 +513,7 @@ app.post('/api/invoices', authenticateToken, async (req, res) => {
         if (!validateNumber(actualPrice)) return res.status(400).json({ error: "Invalid price detected." });
 
         if (item.id !== 'custom') {
-            const product = await db.inventory.findOne({ id: parseInt(item.id) }); // Allow deducting from soft-deleted products
+            const product = await db.inventory.findOne({ id: parseInt(item.id) }); 
             if (product) { 
                 actualPrice = product.price; 
                 itemCost = product.actualCost || 0; 
@@ -496,7 +552,6 @@ app.post('/api/invoices', authenticateToken, async (req, res) => {
                         { $set: { stock: newTotalStock, batches: updatedBatches } }
                     );
                     
-                    // 🚀 NEW: ACTIVE LOW STOCK NOTIFICATION
                     if (newTotalStock <= (product.lowStockAlert || 0)) {
                         dispatchWebhook('alert.low_stock', { 
                             name: product.name, 
@@ -560,7 +615,6 @@ app.post('/api/invoices', authenticateToken, async (req, res) => {
     await db.invoices.insert(newInvoice);
     await logAudit(req.user.username, 'CREATE', 'INVOICE', `Generated document: ${newInvoice.id}`);
 
-    // 🚀 FIRE WEBHOOK TO ACCOUNTING APPS
     dispatchWebhook('invoice.created', newInvoice);
 
     if (phone && phone.trim() !== '') {
@@ -596,9 +650,6 @@ app.post('/api/invoices', authenticateToken, async (req, res) => {
     res.json({ message: "Invoice saved securely!", invoice: newInvoice });
 });
 
-// ==========================================
-// INVOICE-SPECIFIC SETTLEMENT ENDPOINT!
-// ==========================================
 app.post('/api/invoices/settle', authenticateToken, async (req, res) => {
     const { originalInvoiceId, amount, payMethod, customerName, phone } = req.body;
     const inv = await db.invoices.findOne({ id: originalInvoiceId });
@@ -607,11 +658,9 @@ app.post('/api/invoices/settle', authenticateToken, async (req, res) => {
     const isOwed = (inv.payments.creditDue || 0) > 0;
     const parsedAmt = parseFloat(amount);
     
-    // Calculate the new balance for the invoice
     let currentBalance = inv.payments.creditDue || 0;
     const newCreditDue = isOwed ? (currentBalance - parsedAmt) : (currentBalance + parsedAmt);
     
-    // Add to Settlement History Array
     const settlementRecord = {
         date: new Date().toISOString(),
         amount: parsedAmt,
@@ -621,13 +670,11 @@ app.post('/api/invoices/settle', authenticateToken, async (req, res) => {
 
     const updatedSettlements = inv.settlements ? [...inv.settlements, settlementRecord] : [settlementRecord];
     
-    // Update Original Invoice
     await db.invoices.update(
         { id: originalInvoiceId },
         { $set: { "payments.creditDue": newCreditDue, settlements: updatedSettlements } }
     );
 
-    // Create the global Receipt / CRN
     const docPrefix = isOwed ? "RCPT-" : "CRN-";
     const newDocId = docPrefix + Date.now().toString().slice(-6);
     
@@ -657,7 +704,6 @@ app.post('/api/invoices/settle', authenticateToken, async (req, res) => {
     await db.invoices.insert(receiptInvoice);
     await logAudit(req.user.username, 'CREATE', 'SETTLEMENT', `Settled ₹${parsedAmt} for ${originalInvoiceId} via ${newDocId}`);
 
-    // Update Customer Total Balance
     if (phone || inv.phone) {
         const targetPhone = phone || inv.phone;
         const customer = await db.customers.findOne({ phone: targetPhone });
@@ -770,7 +816,6 @@ cron.schedule('59 23 * * *', async () => {
         try {
             const dateStr = new Date().toISOString().split('T')[0];
             
-            // 🚀 NEW: AUTOMATED DAILY SALES SUMMARY NOTIFICATION
             const todaysInvoices = await db.invoices.find({ date: { $regex: new RegExp('^' + dateStr) } });
             const dailyRevenue = todaysInvoices.reduce((sum, inv) => sum + (inv.grandTotal || 0), 0);
             dispatchWebhook('reports.daily_summary', {
@@ -931,6 +976,7 @@ app.listen(PORT, '0.0.0.0', async () => {
 });
 
 // =======================================================================
+// =======================================================================
 // 🏢 HQ BACKGROUND SYNC ENGINE
 // =======================================================================
 async function pushSalesToHQ() {
@@ -971,9 +1017,3 @@ async function pushSalesToHQ() {
     } catch (err) {
         console.error('❌ Sync Engine Network Error:', err.message);
     }
-}
-
-// Start the background worker
-console.log("🚀 Background Sync Engine Initialized");
-setInterval(pushSalesToHQ, 300000); // Runs every 5 minutes
-pushSalesToHQ(); // Run once on startup
