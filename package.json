@@ -1,0 +1,32 @@
+{
+  "name": "baraka-billings-pos",
+  "version": "4.0.0",
+  "bin": "entry.js",
+  "dependencies": {
+    "aws-sdk": "*",
+    "bcryptjs": "*",
+    "cors": "*",
+    "dotenv": "*",
+    "express": "^4.19.2",
+    "express-rate-limit": "*",
+    "javascript-obfuscator": "^5.4.3",
+    "jsonwebtoken": "*",
+    "nedb-promises": "^6.2.3",
+    "node-cron": "*",
+    "open": "7.4.2",
+    "whatsapp-web.js": "*"
+  },
+  "pkg": {
+    "scripts": [
+      "start": "node server.js",
+	  "build": "node build.js"
+    ],
+    "assets": [
+      "index.html",
+      "app-bundled.js"
+    ]
+  },
+  "devDependencies": {
+    "eslint": "^10.4.0"
+  }
+}
