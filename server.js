@@ -976,7 +976,6 @@ app.listen(PORT, '0.0.0.0', async () => {
 });
 
 // =======================================================================
-// =======================================================================
 // 🏢 HQ BACKGROUND SYNC ENGINE
 // =======================================================================
 async function pushSalesToHQ() {
@@ -1017,3 +1016,4 @@ async function pushSalesToHQ() {
     } catch (err) {
         console.error('❌ Sync Engine Network Error:', err.message);
     }
+}
