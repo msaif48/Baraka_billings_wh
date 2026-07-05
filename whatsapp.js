@@ -10,7 +10,18 @@ let dbRef = null;
 const initWhatsApp = (db) => {
     dbRef = db;
     
-    let localBrowser = null;
+    // Default options for Linux Cloud Hosting
+    let puppeteerOptions = { 
+        headless: true, // Must be true in the cloud environment
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox', 
+            '--disable-dev-shm-usage',
+            '--disable-gpu'
+        ] 
+    };
+
+    // Override browser executable paths if running on local development machines
     if (process.platform === 'win32') {
         const browserPaths = [
             'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
@@ -18,24 +29,23 @@ const initWhatsApp = (db) => {
             'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
             'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
         ];
-        localBrowser = browserPaths.find(p => fs.existsSync(p));
+        const localBrowser = browserPaths.find(p => fs.existsSync(p));
+        if (localBrowser) {
+            puppeteerOptions.executablePath = localBrowser;
+            puppeteerOptions.headless = false; // Visible window for local testing
+        }
     } else if (process.platform === 'darwin') {
         const macPaths = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'];
-        localBrowser = macPaths.find(p => fs.existsSync(p)) || null;
+        const localBrowser = macPaths.find(p => fs.existsSync(p)) || null;
+        if (localBrowser) {
+            puppeteerOptions.executablePath = localBrowser;
+            puppeteerOptions.headless = false;
+        }
     }
 
     whatsappClient = new Client({ 
         authStrategy: new LocalAuth(), 
-        puppeteer: { 
-            headless: false, // Keeping it visible so you can watch it work!
-            executablePath: localBrowser, 
-            args: [
-                '--new-window',
-                '--window-size=1024,768', 
-                '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote', '--disable-gpu'
-            ] 
-        } 
+        puppeteer: puppeteerOptions 
     });
 
     whatsappClient.on('qr', (qr) => {
@@ -50,12 +60,9 @@ const initWhatsApp = (db) => {
         console.log('✅ Free WhatsApp Client Ready and Connected!');
     });
 
-    if (localBrowser) {
-        console.log("🚀 Starting WhatsApp Engine using:", localBrowser);
-        whatsappClient.initialize().catch(err => console.error("WhatsApp Init Error:", err));
-    }
+    console.log("🚀 Starting WhatsApp Engine Core...");
+    whatsappClient.initialize().catch(err => console.error("WhatsApp Init Error:", err));
 };
-
 router.post('/send', async (req, res) => {
     const { phone, message, pdfBase64 } = req.body;
     const settingsDB = await dbRef.settings.findOne({ _id: 'global' }) || { globalPrefs: {} };
