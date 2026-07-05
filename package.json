@@ -18,6 +18,7 @@
     "nedb-promises": "^6.2.3",
     "node-cron": "*",
     "open": "7.4.2",
+    "qrcode-terminal": "*",
     "whatsapp-web.js": "*"
   },
   "pkg": {
