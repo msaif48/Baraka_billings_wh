@@ -2,6 +2,10 @@
   "name": "baraka-billings-pos",
   "version": "4.0.0",
   "bin": "entry.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "node build.js"
+  },
   "dependencies": {
     "aws-sdk": "*",
     "bcryptjs": "*",
@@ -18,8 +22,9 @@
   },
   "pkg": {
     "scripts": [
-      "start": "node server.js",
-	  "build": "node build.js"
+      "license-protected.js",
+      "server-protected.js",
+      "whatsapp-protected.js"
     ],
     "assets": [
       "index.html",
